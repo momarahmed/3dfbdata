@@ -87,8 +87,13 @@ const PALETTE: PaletteEntry[] = [
   { color: [168, 85, 247], hex: "#a855f7" },
 ];
 
-const POINT_GEOMS = new Set(["Point", "MultiPoint"]);
-const LINE_GEOMS = new Set(["LineString", "MultiLineString"]);
+// `FeatureLayer.geometry_type` is stored uppercase (POINT, LINESTRING,
+// MULTILINESTRING, …) while GeoJSON geometry types are PascalCase
+// (Point, LineString, …). Compare case-insensitively so both work.
+const POINT_GEOMS = new Set(["POINT", "MULTIPOINT"]);
+const LINE_GEOMS = new Set(["LINESTRING", "MULTILINESTRING"]);
+const matchesGeomSet = (set: Set<string>, raw: string | null | undefined): boolean =>
+  set.has((raw ?? "").trim().toUpperCase());
 
 type LatLng = { lng: number; lat: number };
 
@@ -144,11 +149,12 @@ function extractLine(feature: GeoFeature | undefined): LatLng[] {
   if (!feature) return [];
   const g = feature.geometry;
   if (!g) return [];
-  if (g.type === "LineString") {
+  const t = (g.type ?? "").toUpperCase();
+  if (t === "LINESTRING") {
     const arr = g.coordinates as Array<[number, number]>;
     return arr.map(([lng, lat]) => ({ lng, lat }));
   }
-  if (g.type === "MultiLineString") {
+  if (t === "MULTILINESTRING") {
     const arr = g.coordinates as Array<Array<[number, number]>>;
     if (arr.length === 0) return [];
     return arr[0].map(([lng, lat]) => ({ lng, lat }));
@@ -229,7 +235,9 @@ export default function SimulationPage() {
     setError(null);
     try {
       const res = await apiFetch<{ data: FeatureLayerSummary[] }>("/api/feature-layers");
-      setLayers(res.data ?? []);
+      // Match the Map page: only surface layers that finished importing.
+      const ready = (res.data ?? []).filter((l) => (l.status ?? "").toUpperCase() === "READY");
+      setLayers(ready);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load feature layers");
     } finally {
@@ -242,13 +250,129 @@ export default function SimulationPage() {
   }, [user, loadLayers]);
 
   const pointLayers = useMemo(
-    () => layers.filter((l) => POINT_GEOMS.has((l.geometry_type ?? "").trim())),
+    () => layers.filter((l) => matchesGeomSet(POINT_GEOMS, l.geometry_type)),
     [layers]
   );
   const lineLayers = useMemo(
-    () => layers.filter((l) => LINE_GEOMS.has((l.geometry_type ?? "").trim())),
+    () => layers.filter((l) => matchesGeomSet(LINE_GEOMS, l.geometry_type)),
     [layers]
   );
+
+  /**
+   * Render the selected route + point layers on the map **as soon as the user
+   * picks them**, so the Simulation page behaves like the Map tool. Start/Pause
+   * then animates those same markers along the route.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    async function draw() {
+      if (selectedRouteLayerId === "") {
+        routeRef.current = null;
+        await mapRef.current?.setRoute({
+          routeId: "none",
+          color: [59, 130, 246],
+          coords: [],
+        });
+        return;
+      }
+      try {
+        const fc = await apiFetch<FeatureCollection>(
+          `/api/feature-layers/${selectedRouteLayerId}/geojson?limit=10000`
+        );
+        if (cancelled) return;
+        const lineFeature = fc.features.find((f) => matchesGeomSet(LINE_GEOMS, f.geometry?.type));
+        const coords = extractLine(lineFeature);
+        if (coords.length < 2) {
+          setError("Selected route layer has no usable LineString geometry");
+          return;
+        }
+        const route = buildRoutePath(coords);
+        routeRef.current = route;
+        await mapRef.current?.setRoute({
+          routeId: `feature-layer:${selectedRouteLayerId}`,
+          color: [59, 130, 246],
+          coords: route.coords,
+        });
+        await mapRef.current?.recenterOnTracks();
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to render route");
+      }
+    }
+    if (!playingRef.current && !pausedRef.current) void draw();
+    return () => { cancelled = true; };
+  }, [selectedRouteLayerId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function draw() {
+      if (selectedPointLayerId === "") {
+        vehiclesRef.current = [];
+        setLive({});
+        await mapRef.current?.setVehicles([]);
+        return;
+      }
+      try {
+        const fc = await apiFetch<FeatureCollection>(
+          `/api/feature-layers/${selectedPointLayerId}/geojson?limit=10000`
+        );
+        if (cancelled) return;
+        const pointFeatures = fc.features.filter((f) => matchesGeomSet(POINT_GEOMS, f.geometry?.type));
+        if (pointFeatures.length === 0) {
+          setError("Selected control layer has no point features");
+          await mapRef.current?.setVehicles([]);
+          return;
+        }
+
+        const route = routeRef.current;
+        const specs = pointFeatures.map((f, idx) => {
+          const props = f.properties ?? {};
+          const label =
+            (props.name as string) ||
+            (props.title as string) ||
+            (props.label as string) ||
+            `F${f.id ?? idx}`;
+          const palette = PALETTE[idx % PALETTE.length];
+          const g = f.geometry;
+          let start = { lng: 0, lat: 0 };
+          const gt = (g?.type ?? "").toUpperCase();
+          if (gt === "POINT") {
+            const [lng, lat] = g!.coordinates as [number, number];
+            start = { lng, lat };
+          } else if (gt === "MULTIPOINT") {
+            const [lng, lat] = (g!.coordinates as Array<[number, number]>)[0] ?? [0, 0];
+            start = { lng, lat };
+          }
+          return {
+            id: String(f.id ?? idx),
+            label,
+            color: palette.color,
+            offsetM: route ? (route.totalM * idx) / pointFeatures.length : 0,
+            start,
+          };
+        });
+
+        vehiclesRef.current = specs.map((s) => ({
+          id: s.id,
+          label: s.label,
+          offsetM: s.offsetM,
+        }));
+
+        await mapRef.current?.setVehicles(
+          specs.map((s) => ({
+            vehicleId: s.id,
+            color: s.color,
+            label: s.label,
+            start: s.start,
+          }))
+        );
+        await mapRef.current?.recenterOnTracks();
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to render points");
+      }
+    }
+    if (!playingRef.current && !pausedRef.current) void draw();
+    return () => { cancelled = true; };
+  }, [selectedPointLayerId, selectedRouteLayerId]);
 
   const stopAnimation = () => {
     playingRef.current = false;
@@ -334,67 +458,29 @@ export default function SimulationPage() {
       setError("Pick both a control (points) layer and a route (line) layer");
       return;
     }
+    const route = routeRef.current;
+    const vehicles = vehiclesRef.current;
+    if (!route || vehicles.length === 0) {
+      setError("Layers haven't finished rendering yet. Wait a moment and retry.");
+      return;
+    }
+
     setError(null);
     setStarting(true);
     try {
-      const [pointFc, routeFc] = await Promise.all([
-        apiFetch<FeatureCollection>(`/api/feature-layers/${selectedPointLayerId}/geojson?limit=10000`),
-        apiFetch<FeatureCollection>(`/api/feature-layers/${selectedRouteLayerId}/geojson?limit=10000`),
-      ]);
-
-      const lineFeature = routeFc.features.find((f) =>
-        LINE_GEOMS.has(f.geometry?.type ?? "")
-      );
-      const coords = extractLine(lineFeature);
-      if (coords.length < 2) {
-        setError("Selected route layer has no usable LineString geometry");
-        return;
-      }
-
-      const pointFeatures = pointFc.features.filter((f) => POINT_GEOMS.has(f.geometry?.type ?? ""));
-      if (pointFeatures.length === 0) {
-        setError("Selected control layer has no point features");
-        return;
-      }
-
-      const route = buildRoutePath(coords);
-      routeRef.current = route;
-
-      // Each point feature becomes a vehicle. Keep each vehicle's *starting* position
-      // evenly staggered along the route, regardless of where the physical point sits.
-      const vehicles: Vehicle[] = pointFeatures.map((f, idx) => {
-        const props = f.properties ?? {};
-        const label =
-          (props.name as string) ||
-          (props.title as string) ||
-          (props.label as string) ||
-          `F${f.id}`;
-        return {
-          id: String(f.id ?? idx),
-          label,
-          offsetM: (route.totalM * idx) / pointFeatures.length,
-        };
-      });
-      vehiclesRef.current = vehicles;
-
-      const vehicleSpecs: SimVehicleSpec[] = vehicles.map((v, idx) => {
+      // Re-seed each vehicle at its staggered offset along the current route so
+      // the animation starts from a predictable, evenly-distributed fleet layout.
+      const specs: SimVehicleSpec[] = vehicles.map((v, idx) => {
         const palette = PALETTE[idx % PALETTE.length];
-        const start = sampleAtDistance(route, v.offsetM);
+        const pos = sampleAtDistance(route, v.offsetM);
         return {
           vehicleId: v.id,
           color: palette.color,
-          start: { lng: start.lng, lat: start.lat },
+          start: { lng: pos.lng, lat: pos.lat },
           label: v.label,
         };
       });
-
-      await mapRef.current?.setRoute({
-        routeId: `feature-layer:${selectedRouteLayerId}`,
-        color: [59, 130, 246], // blue
-        coords: route.coords,
-      });
-      await mapRef.current?.setVehicles(vehicleSpecs);
-      await mapRef.current?.recenterOnTracks();
+      await mapRef.current?.setVehicles(specs);
 
       const created = await apiFetch<{ data: SimulationRecord }>("/api/simulations", {
         method: "POST",
