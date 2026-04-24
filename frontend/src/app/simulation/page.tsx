@@ -43,7 +43,7 @@ const SimulationMap = dynamic(
 );
 
 type FeatureLayerSummary = {
-  id: number;
+  id: string;
   name: string;
   slug: string;
   status: string;
@@ -202,8 +202,8 @@ export default function SimulationPage() {
   const mapRef = useRef<SimulationMapHandle>(null);
 
   const [layers, setLayers] = useState<FeatureLayerSummary[]>([]);
-  const [selectedPointLayerId, setSelectedPointLayerId] = useState<number | "">("");
-  const [selectedRouteLayerId, setSelectedRouteLayerId] = useState<number | "">("");
+  const [selectedPointLayerId, setSelectedPointLayerId] = useState<string | "">("");
+  const [selectedRouteLayerId, setSelectedRouteLayerId] = useState<string | "">("");
   const [sim, setSim] = useState<SimulationRecord | null>(null);
   const [speed, setSpeed] = useState(1);
   const [loop, setLoop] = useState(true);
@@ -257,6 +257,19 @@ export default function SimulationPage() {
     () => layers.filter((l) => matchesGeomSet(LINE_GEOMS, l.geometry_type)),
     [layers]
   );
+
+  // Drop stale layer UUIDs after reloads (e.g. migrate:fresh) so Select never
+  // goes out of range and effects never call `/api/feature-layers/NaN/...`.
+  useEffect(() => {
+    if (selectedPointLayerId && !pointLayers.some((l) => l.id === selectedPointLayerId)) {
+      setSelectedPointLayerId("");
+    }
+  }, [pointLayers, selectedPointLayerId]);
+  useEffect(() => {
+    if (selectedRouteLayerId && !lineLayers.some((l) => l.id === selectedRouteLayerId)) {
+      setSelectedRouteLayerId("");
+    }
+  }, [lineLayers, selectedRouteLayerId]);
 
   /**
    * Render the selected route + point layers on the map **as soon as the user
@@ -599,13 +612,11 @@ export default function SimulationPage() {
     }
   };
 
-  const handlePointLayerChange = (e: SelectChangeEvent<number | "">) => {
-    const v = e.target.value;
-    setSelectedPointLayerId(v === "" ? "" : Number(v));
+  const handlePointLayerChange = (e: SelectChangeEvent<string | "">) => {
+    setSelectedPointLayerId(e.target.value);
   };
-  const handleRouteLayerChange = (e: SelectChangeEvent<number | "">) => {
-    const v = e.target.value;
-    setSelectedRouteLayerId(v === "" ? "" : Number(v));
+  const handleRouteLayerChange = (e: SelectChangeEvent<string | "">) => {
+    setSelectedRouteLayerId(e.target.value);
   };
 
   useEffect(() => () => stopAnimation(), []);
