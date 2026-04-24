@@ -294,9 +294,11 @@ export default function SimulationPage() {
   const routeRef = useRef<RoutePath | null>(null);
   const streamsDataRef = useRef<StreamsPayload | null>(null);
 
+  // Use stable primitives only — `router` from useRouter() can get a new reference
+  // every render in some Next.js versions and re-fire this effect indefinitely.
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
-  }, [user, authLoading, router]);
+  }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps -- router intentionally omitted
 
   useEffect(() => { speedRef.current = speed; }, [speed]);
   useEffect(() => { loopRef.current = loop; }, [loop]);
@@ -321,11 +323,17 @@ export default function SimulationPage() {
   }, [user, loadLayers]);
 
   useEffect(() => {
+    if (!selectedPointLayerId) {
+      setGroupByField((g) => (g === "" ? g : ""));
+      setPointLayerFields((f) => (f.length === 0 ? f : []));
+      streamsDataRef.current = null;
+      setStreamInfo((s) => (s === null ? s : null));
+      return;
+    }
+    // New point layer: reset grouping + streams, then load column names.
     setGroupByField("");
-    setPointLayerFields([]);
     streamsDataRef.current = null;
     setStreamInfo(null);
-    if (!selectedPointLayerId) return;
     let cancelled = false;
     void (async () => {
       setLoadingPointFields(true);
@@ -355,18 +363,21 @@ export default function SimulationPage() {
     [layers]
   );
 
-  // Drop stale layer UUIDs after reloads (e.g. migrate:fresh) so Select never
-  // goes out of range and effects never call `/api/feature-layers/NaN/...`.
+  // Drop stale layer UUIDs after reloads. While layers are still loading, the
+  // list is empty — do not clear a valid selection (that was causing a
+  // setState ↔ effect loop with the fields / stream effects).
   useEffect(() => {
+    if (loadingLayers) return;
     if (selectedPointLayerId && !pointLayers.some((l) => l.id === selectedPointLayerId)) {
       setSelectedPointLayerId("");
     }
-  }, [pointLayers, selectedPointLayerId]);
+  }, [loadingLayers, pointLayers, selectedPointLayerId]);
   useEffect(() => {
+    if (loadingLayers) return;
     if (selectedRouteLayerId && !lineLayers.some((l) => l.id === selectedRouteLayerId)) {
       setSelectedRouteLayerId("");
     }
-  }, [lineLayers, selectedRouteLayerId]);
+  }, [loadingLayers, lineLayers, selectedRouteLayerId]);
 
   /**
    * Route line only: background context. Car positions always come from the
