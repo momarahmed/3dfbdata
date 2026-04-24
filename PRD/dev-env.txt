@@ -1,0 +1,98 @@
+You Are 10 years full stack developer Build a full local development application using Docker Compose for this stack:
+
+- Frontend: Next.js latest 
+- Backend: Laravel 12
+- Redis
+- PostgreSQL 18.3 & postgis extension  PostGIS 3.6.2
+
+Requirements:
+
+1. Use docker-compose for local development.
+2. Enable hot reload for both frontend and backend during development.
+3. Expose services on available host ports and avoid conflicts when possible.
+4. Configure frontend and backend URLs clearly using this IP and exposed ports.
+5. Make the project developer-friendly and production-aware.
+
+Project structure:
+- /frontend -> Next.js app
+- /backend -> Laravel 12 app
+- docker-compose.yml at ./
+
+What I need you to generate:
+
+1. A complete `docker-compose.yml`
+2. Dockerfiles for frontend and backend
+3. Development-ready configuration with mounted volumes
+4. Hot reload setup:
+   - Next.js dev server with file watching working correctly inside Docker
+   - Laravel running in dev mode
+5. Services:
+   - frontend
+   - backend
+   - mysql
+   - redis
+6. Use named volumes where appropriate
+7. Add `.env.example` files for frontend and backend
+8. Configure Laravel to connect to MySQL and Redis using docker service names
+9. Configure Next.js frontend to call Laravel API using public environment variables
+
+Preferred host ports:
+- Frontend: 3000
+- Backend: 8000
+- MySQL: 3306
+- Redis: 6379
+
+If any of these ports are already in use, automatically choose safe alternatives and reflect them consistently in all configs.
+
+Base URLs:
+- Frontend URL: http://127.0.0.1:3000
+- Backend URL: http://127.0.0.1:8000
+
+Environment expectations:
+- Frontend should use something like:
+  - NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+- Backend should use something like:
+  - APP_URL=http://127.0.0.1:8000
+  - FRONTEND_URL=http://127.0.0.1:3000
+
+Laravel requirements:
+- Laravel 12
+- PHP suitable for Laravel 12
+- Include required extensions for MySQL, Redis, mbstring, bcmath, pcntl, intl, zip
+- Run with `php artisan serve --host=0.0.0.0 --port=8000` for development, or an equivalent dev-safe approach
+- Include permissions handling if needed
+- Include Composer in the backend container workflow
+
+Next.js requirements:
+- Latest stable Next.js
+- MUI installed and ready
+- Run dev server on 0.0.0.0:3000
+- Hot reload must work from mounted files
+- If needed, enable polling for file watching inside Docker
+
+MySQL requirements:
+- Version 8.4
+- Persistent named volume
+- Default database/user/password values in env examples
+
+Redis requirements:
+- Standard Redis container for cache/session/queue use
+
+Also generate:
+- A sample root `README.md` with:
+  - how to start the stack
+  - how to stop it
+  - how to rebuild it
+  - the service URLs
+  - how to run Laravel migrations
+  - how to install dependencies
+- Commands to initialize both apps if they do not exist yet
+- Notes about CORS setup between frontend and backend
+- Healthcheck examples if useful
+
+Important:
+- Keep everything optimized for development, not production
+- Use clear comments in files
+- Make it clean and easy to extend later for nginx/reverse proxy/SSL
+- Return all files with full content
+- Do not skip any required file

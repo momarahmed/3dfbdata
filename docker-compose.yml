@@ -1,0 +1,131 @@
+# ============================================================================
+# CrowdSim 3D Enterprise — Local Development Stack
+# ----------------------------------------------------------------------------
+# Stack: Next.js 15 (frontend) · Laravel 12 (backend) · PostgreSQL 18 + PostGIS
+# 3.6 · Redis 7. All services speak over the internal `crowdsim` network and
+# expose hot-reload-friendly bind mounts for local development.
+# ============================================================================
+
+name: crowdsim
+
+services:
+  # --------------------------------------------------------------------------
+  # PostgreSQL 18 + PostGIS 3.6 — single source of truth for routing data
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgis/postgis:18-3.6-alpine
+    container_name: crowdsim_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-crowdsim}
+      POSTGRES_USER: ${POSTGRES_USER:-crowdsim}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crowdsim_secret}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crowdsim} -d ${POSTGRES_DB:-crowdsim}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [crowdsim]
+
+  # --------------------------------------------------------------------------
+  # Redis 7 — cache, sessions, queues
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: crowdsim_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [crowdsim]
+
+  # --------------------------------------------------------------------------
+  # Laravel 12 backend — REST API + Esri FeatureServer
+  # --------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: crowdsim_backend
+    restart: unless-stopped
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_URL: ${APP_URL:-http://localhost:${BACKEND_PORT:-8000}}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:${FRONTEND_PORT:-3000}}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB:-crowdsim}
+      DB_USERNAME: ${POSTGRES_USER:-crowdsim}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-crowdsim_secret}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: sync
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/var/www/html
+      - backend_vendor:/var/www/html/vendor
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/api/health | grep -q healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    networks: [crowdsim]
+
+  # --------------------------------------------------------------------------
+  # Next.js 15 frontend
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: crowdsim_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+      NEXT_PUBLIC_APP_NAME: CrowdSim 3D
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      # Set in .env: host path to ./frontend (e.g. C:/Users/you/projects/3dfbdata/frontend) to fix Chrome
+      # "Unable to add filesystem: <illegal path>" when using DevTools + Docker. See frontend/src/middleware.ts
+      NEXT_DEVTOOLS_WORKSPACE_ROOT: ${NEXT_DEVTOOLS_WORKSPACE_ROOT:-}
+      NEXT_DEVTOOLS_WORKSPACE_UUID: ${NEXT_DEVTOOLS_WORKSPACE_UUID:-}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    depends_on:
+      - backend
+    networks: [crowdsim]
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_vendor:
+  frontend_node_modules:
+  frontend_next:
+
+networks:
+  crowdsim:
+    driver: bridge

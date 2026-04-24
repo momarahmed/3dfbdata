@@ -1,0 +1,5 @@
+vendor
+.git
+*.log
+storage/logs/*
+bootstrap/cache/*.php
