@@ -46,6 +46,8 @@ export type SimulationMapHandle = {
   clearVehicles: () => void;
   /** Recenter to either the current tracks or the current route. */
   recenterOnTracks: () => Promise<void>;
+  /** Fit the view to an arbitrary WGS84 point set (e.g. all streamed samples). */
+  recenterToCoordinates: (coords: Array<{ lng: number; lat: number }>) => Promise<void>;
 };
 
 type Props = { className?: string };
@@ -304,6 +306,38 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
         }
         for (const p of routeCoordsRef.current) consume(p);
         if (!isFinite(minLng)) return;
+        const extent = new Extent({
+          xmin: minLng,
+          ymin: minLat,
+          xmax: maxLng,
+          ymax: maxLat,
+          spatialReference: { wkid: 4326 } as any,
+        });
+        try {
+          await view.goTo(extent.expand(1.4));
+        } catch { /* ignore cancel */ }
+      },
+      async recenterToCoordinates(coords) {
+        await initPromiseRef.current;
+        const view = viewRef.current;
+        if (!view || coords.length === 0) return;
+        let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+        for (const p of coords) {
+          if (p.lng < minLng) minLng = p.lng;
+          if (p.lat < minLat) minLat = p.lat;
+          if (p.lng > maxLng) maxLng = p.lng;
+          if (p.lat > maxLat) maxLat = p.lat;
+        }
+        if (minLng === maxLng) {
+          const pad = 0.01;
+          minLng -= pad;
+          maxLng += pad;
+        }
+        if (minLat === maxLat) {
+          const pad = 0.01;
+          minLat -= pad;
+          maxLat += pad;
+        }
         const extent = new Extent({
           xmin: minLng,
           ymin: minLat,

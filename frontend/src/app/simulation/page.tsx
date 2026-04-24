@@ -103,11 +103,17 @@ type RoutePath = {
   totalM: number;
 };
 
-type Vehicle = {
+type FieldDef = { name: string; type: string | null };
+
+/** One logical vehicle: all point features with the same group field value, time-ordered. */
+type StreamVehicle = {
   id: string;
   label: string;
-  offsetM: number;
+  color: [number, number, number];
+  stream: LatLng[];
 };
+
+type StreamsPayload = { vehicles: StreamVehicle[]; maxIndex: number };
 
 type LiveState = {
   vehicleId: string;
@@ -116,9 +122,12 @@ type LiveState = {
   lat: number;
   headingDeg: number;
   status: "pending" | "moving" | "completed";
+  pointIndex: number;
+  colorRgb: [number, number, number];
 };
 
-const BASE_SPEED_MPS = 15; // ≈ 54 km/h at speed multiplier = 1
+/** How fast the simulator advances through point indices (at 1x speed). */
+const BASE_STREAM_PPS = 2.5;
 
 function haversineM(a: LatLng, b: LatLng): number {
   const R = 6371000;
@@ -172,28 +181,85 @@ function buildRoutePath(coords: LatLng[]): RoutePath {
   return { coords, cumulativeM: cumulative, totalM: total };
 }
 
-/** Find the (lng, lat, headingDeg) at a given distance along the route. */
-function sampleAtDistance(route: RoutePath, distM: number): { lng: number; lat: number; headingDeg: number } {
-  if (route.coords.length === 0) {
-    return { lng: 0, lat: 0, headingDeg: 0 };
+function collectCoordsFromFeature(f: GeoFeature): LatLng[] {
+  const g = f.geometry;
+  if (!g) return [];
+  const t = (g.type ?? "").toUpperCase();
+  if (t === "POINT") {
+    const [lng, lat] = g.coordinates as [number, number];
+    return [{ lng, lat }];
   }
-  if (route.coords.length === 1 || route.totalM === 0) {
-    return { lng: route.coords[0].lng, lat: route.coords[0].lat, headingDeg: 0 };
+  if (t === "MULTIPOINT") {
+    return (g.coordinates as Array<[number, number]>).map(([lng, lat]) => ({ lng, lat }));
   }
-  const clamped = Math.max(0, Math.min(route.totalM, distM));
-  let i = 1;
-  while (i < route.cumulativeM.length && route.cumulativeM[i] < clamped) i++;
-  const prev = route.coords[i - 1];
-  const next = route.coords[Math.min(i, route.coords.length - 1)];
-  const segStart = route.cumulativeM[i - 1];
-  const segEnd = route.cumulativeM[Math.min(i, route.cumulativeM.length - 1)];
-  const segDur = Math.max(1e-6, segEnd - segStart);
-  const t = Math.min(1, Math.max(0, (clamped - segStart) / segDur));
-  return {
-    lng: prev.lng + (next.lng - prev.lng) * t,
-    lat: prev.lat + (next.lat - prev.lat) * t,
-    headingDeg: bearingDeg(prev, next),
-  };
+  return [];
+}
+
+function sortKeyFromProps(props: Record<string, unknown>, featureId: number | string): number {
+  const keys = [
+    "time",
+    "Time",
+    "timestamp",
+    "point_time",
+    "POINT_TI",
+    "t",
+    "seq",
+    "sequence",
+    "order",
+    "FID",
+    "fid",
+  ];
+  for (const k of keys) {
+    if (props[k] == null) continue;
+    const v = props[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string") {
+      const n = parseFloat(v);
+      if (!Number.isNaN(n) && v.trim() !== "") return n;
+      const d = Date.parse(v);
+      if (!Number.isNaN(d)) return d;
+    }
+  }
+  const n = parseFloat(String(featureId));
+  return Number.isNaN(n) ? 0 : n;
+}
+
+function buildGroupedPointStreams(
+  features: GeoFeature[],
+  groupByField: string
+): StreamsPayload {
+  type E = { t: number; tie: number; p: LatLng };
+  const m = new Map<string, E[]>();
+  let tie = 0;
+  for (const f of features) {
+    if (!matchesGeomSet(POINT_GEOMS, f.geometry?.type)) continue;
+    const props = f.properties ?? {};
+    const raw = (props as Record<string, unknown>)[groupByField];
+    const gk = raw == null || String(raw).trim() === "" ? "__unassigned" : String(raw);
+    const t0 = sortKeyFromProps(props, f.id);
+    for (const p of collectCoordsFromFeature(f)) {
+      if (!m.has(gk)) m.set(gk, []);
+      m.get(gk)!.push({ t: t0, tie: tie++, p });
+    }
+  }
+  const vehicles: StreamVehicle[] = [];
+  let vIdx = 0;
+  let maxIndex = 0;
+  for (const [key, evs] of m) {
+    evs.sort((a, b) => (a.t !== b.t ? a.t - b.t : a.tie - b.tie));
+    const stream = evs.map((e) => e.p);
+    if (stream.length === 0) continue;
+    const c = PALETTE[vIdx % PALETTE.length]!;
+    vIdx += 1;
+    vehicles.push({
+      id: key,
+      label: key,
+      color: c.color,
+      stream,
+    });
+    maxIndex = Math.max(maxIndex, stream.length - 1);
+  }
+  return { vehicles, maxIndex: Math.max(0, maxIndex) };
 }
 
 export default function SimulationPage() {
@@ -204,6 +270,10 @@ export default function SimulationPage() {
   const [layers, setLayers] = useState<FeatureLayerSummary[]>([]);
   const [selectedPointLayerId, setSelectedPointLayerId] = useState<string | "">("");
   const [selectedRouteLayerId, setSelectedRouteLayerId] = useState<string | "">("");
+  const [groupByField, setGroupByField] = useState<string | "">("");
+  const [pointLayerFields, setPointLayerFields] = useState<FieldDef[]>([]);
+  const [loadingPointFields, setLoadingPointFields] = useState(false);
+  const [streamInfo, setStreamInfo] = useState<{ cars: number; samples: number; maxIndex: number } | null>(null);
   const [sim, setSim] = useState<SimulationRecord | null>(null);
   const [speed, setSpeed] = useState(1);
   const [loop, setLoop] = useState(true);
@@ -215,13 +285,14 @@ export default function SimulationPage() {
 
   const playingRef = useRef(false);
   const pausedRef = useRef(false);
-  const simMRef = useRef(0); // current distance (m) advanced along the route
+  /** Current position in the shared point stream timeline (0 … maxIndex). */
+  const streamTRef = useRef(0);
   const lastTickRef = useRef<number | null>(null);
   const speedRef = useRef(1);
   const loopRef = useRef(true);
   const rafRef = useRef<number | null>(null);
   const routeRef = useRef<RoutePath | null>(null);
-  const vehiclesRef = useRef<Vehicle[]>([]);
+  const streamsDataRef = useRef<StreamsPayload | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
@@ -249,6 +320,32 @@ export default function SimulationPage() {
     if (user) void loadLayers();
   }, [user, loadLayers]);
 
+  useEffect(() => {
+    setGroupByField("");
+    setPointLayerFields([]);
+    streamsDataRef.current = null;
+    setStreamInfo(null);
+    if (!selectedPointLayerId) return;
+    let cancelled = false;
+    void (async () => {
+      setLoadingPointFields(true);
+      try {
+        const res = await apiFetch<{
+          fields: FieldDef[];
+        }>(`/api/routing-tasks/layers/${selectedPointLayerId}/fields`);
+        if (cancelled) return;
+        setPointLayerFields(res.fields ?? []);
+      } catch {
+        if (!cancelled) setPointLayerFields([]);
+      } finally {
+        if (!cancelled) setLoadingPointFields(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPointLayerId]);
+
   const pointLayers = useMemo(
     () => layers.filter((l) => matchesGeomSet(POINT_GEOMS, l.geometry_type)),
     [layers]
@@ -272,9 +369,8 @@ export default function SimulationPage() {
   }, [lineLayers, selectedRouteLayerId]);
 
   /**
-   * Render the selected route + point layers on the map **as soon as the user
-   * picks them**, so the Simulation page behaves like the Map tool. Start/Pause
-   * then animates those same markers along the route.
+   * Route line only: background context. Car positions always come from the
+   * grouped point stream, not the polyline geometry.
    */
   useEffect(() => {
     let cancelled = false;
@@ -296,7 +392,7 @@ export default function SimulationPage() {
         const lineFeature = fc.features.find((f) => matchesGeomSet(LINE_GEOMS, f.geometry?.type));
         const coords = extractLine(lineFeature);
         if (coords.length < 2) {
-          setError("Selected route layer has no usable LineString geometry");
+          setError("Selected route layer has no usable line geometry (LineString / MultiLineString)");
           return;
         }
         const route = buildRoutePath(coords);
@@ -315,13 +411,18 @@ export default function SimulationPage() {
     return () => { cancelled = true; };
   }, [selectedRouteLayerId]);
 
+  /**
+   * Build grouped, time-ordered streams from the point layer. The map only
+   * shows the route line; vehicle graphics appear when you press Start.
+   */
   useEffect(() => {
     let cancelled = false;
-    async function draw() {
-      if (selectedPointLayerId === "") {
-        vehiclesRef.current = [];
+    async function build() {
+      if (selectedPointLayerId === "" || groupByField === "") {
+        streamsDataRef.current = null;
+        setStreamInfo(null);
         setLive({});
-        await mapRef.current?.setVehicles([]);
+        if (!playingRef.current && !pausedRef.current) await mapRef.current?.setVehicles([]);
         return;
       }
       try {
@@ -329,63 +430,39 @@ export default function SimulationPage() {
           `/api/feature-layers/${selectedPointLayerId}/geojson?limit=10000`
         );
         if (cancelled) return;
-        const pointFeatures = fc.features.filter((f) => matchesGeomSet(POINT_GEOMS, f.geometry?.type));
-        if (pointFeatures.length === 0) {
-          setError("Selected control layer has no point features");
-          await mapRef.current?.setVehicles([]);
+        const pl = buildGroupedPointStreams(fc.features, groupByField);
+        if (pl.vehicles.length === 0) {
+          setError("No vehicles after grouping — check the group field and geometry.");
+          streamsDataRef.current = null;
+          setStreamInfo(null);
+          if (!playingRef.current && !pausedRef.current) await mapRef.current?.setVehicles([]);
           return;
         }
-
-        const route = routeRef.current;
-        const specs = pointFeatures.map((f, idx) => {
-          const props = f.properties ?? {};
-          const label =
-            (props.name as string) ||
-            (props.title as string) ||
-            (props.label as string) ||
-            `F${f.id ?? idx}`;
-          const palette = PALETTE[idx % PALETTE.length];
-          const g = f.geometry;
-          let start = { lng: 0, lat: 0 };
-          const gt = (g?.type ?? "").toUpperCase();
-          if (gt === "POINT") {
-            const [lng, lat] = g!.coordinates as [number, number];
-            start = { lng, lat };
-          } else if (gt === "MULTIPOINT") {
-            const [lng, lat] = (g!.coordinates as Array<[number, number]>)[0] ?? [0, 0];
-            start = { lng, lat };
-          }
-          return {
-            id: String(f.id ?? idx),
-            label,
-            color: palette.color,
-            offsetM: route ? (route.totalM * idx) / pointFeatures.length : 0,
-            start,
-          };
+        setError(null);
+        const samples = pl.vehicles.reduce((n, v) => n + v.stream.length, 0);
+        streamsDataRef.current = pl;
+        setStreamInfo({
+          cars: pl.vehicles.length,
+          samples,
+          maxIndex: pl.maxIndex,
         });
-
-        vehiclesRef.current = specs.map((s) => ({
-          id: s.id,
-          label: s.label,
-          offsetM: s.offsetM,
-        }));
-
-        await mapRef.current?.setVehicles(
-          specs.map((s) => ({
-            vehicleId: s.id,
-            color: s.color,
-            label: s.label,
-            start: s.start,
-          }))
-        );
-        await mapRef.current?.recenterOnTracks();
+        if (!playingRef.current && !pausedRef.current) {
+          await mapRef.current?.setVehicles([]);
+          const flat = pl.vehicles.flatMap((v) => v.stream);
+          if (selectedRouteLayerId) await mapRef.current?.recenterOnTracks();
+          else if (flat.length) await mapRef.current?.recenterToCoordinates(flat);
+        }
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to render points");
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load point features");
+        }
+        streamsDataRef.current = null;
+        setStreamInfo(null);
       }
     }
-    if (!playingRef.current && !pausedRef.current) void draw();
+    if (!playingRef.current && !pausedRef.current) void build();
     return () => { cancelled = true; };
-  }, [selectedPointLayerId, selectedRouteLayerId]);
+  }, [selectedPointLayerId, groupByField, selectedRouteLayerId]);
 
   const stopAnimation = () => {
     playingRef.current = false;
@@ -396,44 +473,45 @@ export default function SimulationPage() {
   };
 
   const resetClock = () => {
-    simMRef.current = 0;
+    streamTRef.current = 0;
     lastTickRef.current = null;
     setSeekPct(0);
   };
 
   const applyFrame = useCallback(() => {
-    const route = routeRef.current;
-    const vehicles = vehiclesRef.current;
-    if (!route || vehicles.length === 0) return;
+    const pl = streamsDataRef.current;
+    if (!pl || pl.vehicles.length === 0) return;
 
-    const totalM = Math.max(1, route.totalM);
-    setSeekPct(Math.min(1, simMRef.current / totalM));
+    const maxI = pl.maxIndex;
+    const t = streamTRef.current;
+    setSeekPct(maxI <= 0 ? 0 : Math.min(1, t / maxI));
 
     const updates: Record<string, LiveState> = {};
-    for (const v of vehicles) {
-      let dist = v.offsetM + simMRef.current;
-      let status: LiveState["status"] = "moving";
-      if (loopRef.current) {
-        dist = ((dist % totalM) + totalM) % totalM;
-      } else if (dist >= totalM) {
-        dist = totalM;
-        status = "completed";
-      }
-      const s = sampleAtDistance(route, dist);
+    for (const v of pl.vehicles) {
+      const L = v.stream.length;
+      if (L === 0) continue;
+      const i = Math.min(L - 1, Math.max(0, Math.floor(t)));
+      const p = v.stream[i]!;
+      const pN = v.stream[Math.min(L - 1, i + 1)]!;
+      const heading = L > 1 && i < L - 1 ? bearingDeg(p, pN) : 0;
+      const atEnd = maxI > 0 && t >= maxI;
+      const status: LiveState["status"] = atEnd ? "completed" : "moving";
       updates[v.id] = {
         vehicleId: v.id,
         label: v.label,
-        lng: s.lng,
-        lat: s.lat,
-        headingDeg: s.headingDeg,
-        status,
+        lng: p.lng,
+        lat: p.lat,
+        headingDeg: heading,
+        status: maxI === 0 ? "moving" : status,
+        pointIndex: i,
+        colorRgb: v.color,
       };
       mapRef.current?.updateVehicle({
         vehicleId: v.id,
-        lng: s.lng,
-        lat: s.lat,
-        headingDeg: s.headingDeg,
-        speedKmh: BASE_SPEED_MPS * speedRef.current * 3.6,
+        lng: p.lng,
+        lat: p.lat,
+        headingDeg: heading,
+        speedKmh: BASE_STREAM_PPS * speedRef.current * 3.6,
         visible: true,
       });
     }
@@ -443,23 +521,32 @@ export default function SimulationPage() {
   const step = useCallback(() => {
     rafRef.current = null;
     if (!playingRef.current || pausedRef.current) return;
-    const route = routeRef.current;
-    if (!route) return;
+    const pl = streamsDataRef.current;
+    if (!pl) return;
+    const maxI = pl.maxIndex;
+
+    if (maxI <= 0) {
+      applyFrame();
+      return;
+    }
 
     const now = performance.now();
     const dt = lastTickRef.current == null ? 0 : now - lastTickRef.current;
     lastTickRef.current = now;
 
-    const advanceM = BASE_SPEED_MPS * speedRef.current * (dt / 1000);
-    simMRef.current += advanceM;
+    streamTRef.current += (dt / 1000) * BASE_STREAM_PPS * speedRef.current;
 
-    if (!loopRef.current && simMRef.current >= route.totalM) {
-      simMRef.current = route.totalM;
+    if (!loopRef.current && streamTRef.current > maxI) {
+      streamTRef.current = maxI;
       applyFrame();
       playingRef.current = false;
       lastTickRef.current = null;
       setSim((s) => (s ? { ...s, status: "completed" } : s));
       return;
+    }
+    if (loopRef.current && streamTRef.current > maxI) {
+      const span = maxI + 1;
+      streamTRef.current = ((streamTRef.current % span) + span) % span;
     }
 
     applyFrame();
@@ -467,29 +554,25 @@ export default function SimulationPage() {
   }, [applyFrame]);
 
   const handleStart = async () => {
-    if (selectedPointLayerId === "" || selectedRouteLayerId === "") {
-      setError("Pick both a control (points) layer and a route (line) layer");
+    if (selectedPointLayerId === "" || groupByField === "") {
+      setError("Select a point layer and a field to group vehicles (cars).");
       return;
     }
-    const route = routeRef.current;
-    const vehicles = vehiclesRef.current;
-    if (!route || vehicles.length === 0) {
-      setError("Layers haven't finished rendering yet. Wait a moment and retry.");
+    const pl = streamsDataRef.current;
+    if (!pl || pl.vehicles.length === 0) {
+      setError("No grouped streams to play — check the point layer, group field, and wait for data to load.");
       return;
     }
 
     setError(null);
     setStarting(true);
     try {
-      // Re-seed each vehicle at its staggered offset along the current route so
-      // the animation starts from a predictable, evenly-distributed fleet layout.
-      const specs: SimVehicleSpec[] = vehicles.map((v, idx) => {
-        const palette = PALETTE[idx % PALETTE.length];
-        const pos = sampleAtDistance(route, v.offsetM);
+      const specs: SimVehicleSpec[] = pl.vehicles.map((v) => {
+        const p0 = v.stream[0]!;
         return {
           vehicleId: v.id,
-          color: palette.color,
-          start: { lng: pos.lng, lat: pos.lat },
+          color: v.color,
+          start: { lng: p0.lng, lat: p0.lat },
           label: v.label,
         };
       });
@@ -499,8 +582,10 @@ export default function SimulationPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          vehicle_ids: vehicles.map((v) => v.id),
-          route_id: `feature-layer:${selectedRouteLayerId}`,
+          vehicle_ids: pl.vehicles.map((v) => v.id),
+          route_id: selectedRouteLayerId
+            ? `feature-layer:${selectedRouteLayerId}`
+            : "none",
           speed_multiplier: speed,
           loop,
         }),
@@ -508,9 +593,12 @@ export default function SimulationPage() {
       setSim(created.data);
 
       resetClock();
+      applyFrame();
       playingRef.current = true;
       pausedRef.current = false;
-      rafRef.current = requestAnimationFrame(step);
+      if (pl.maxIndex > 0) {
+        rafRef.current = requestAnimationFrame(step);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start simulation");
     } finally {
@@ -546,7 +634,10 @@ export default function SimulationPage() {
     pausedRef.current = false;
     if (!playingRef.current) playingRef.current = true;
     lastTickRef.current = null;
-    rafRef.current = requestAnimationFrame(step);
+    const m = streamsDataRef.current?.maxIndex ?? 0;
+    if (m > 0) {
+      rafRef.current = requestAnimationFrame(step);
+    }
     try {
       const res = await callLifecycle("resume");
       if (res?.data) setSim(res.data);
@@ -568,14 +659,17 @@ export default function SimulationPage() {
   };
 
   const handleReset = async () => {
-    if (!routeRef.current) return;
+    if (!streamsDataRef.current) return;
     resetClock();
     applyFrame();
     playingRef.current = true;
     pausedRef.current = false;
     lastTickRef.current = null;
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(step);
+    rafRef.current = null;
+    if ((streamsDataRef.current?.maxIndex ?? 0) > 0) {
+      rafRef.current = requestAnimationFrame(step);
+    }
     if (sim) {
       try {
         const res = await callLifecycle("reset");
@@ -587,14 +681,27 @@ export default function SimulationPage() {
   };
 
   const handleSeek = (_: Event, value: number | number[]) => {
+    const pl = streamsDataRef.current;
+    if (!pl) return;
+    const maxI = pl.maxIndex;
+    if (maxI <= 0) {
+      setSeekPct(0);
+      streamTRef.current = 0;
+      lastTickRef.current = null;
+      applyFrame();
+      return;
+    }
     const pct = Math.max(0, Math.min(1, (Array.isArray(value) ? value[0] : value) / 100));
-    const route = routeRef.current;
-    if (!route) return;
-    simMRef.current = route.totalM * pct;
+    streamTRef.current = maxI * pct;
     setSeekPct(pct);
     lastTickRef.current = null;
     applyFrame();
-    if (playingRef.current && !pausedRef.current && rafRef.current == null) {
+    if (
+      playingRef.current &&
+      !pausedRef.current &&
+      rafRef.current == null &&
+      (pl.maxIndex ?? 0) > 0
+    ) {
       rafRef.current = requestAnimationFrame(step);
     }
   };
@@ -618,15 +725,19 @@ export default function SimulationPage() {
   const handleRouteLayerChange = (e: SelectChangeEvent<string | "">) => {
     setSelectedRouteLayerId(e.target.value);
   };
+  const handleGroupByFieldChange = (e: SelectChangeEvent<string | "">) => {
+    setGroupByField(e.target.value);
+  };
 
   useEffect(() => () => stopAnimation(), []);
 
   const timelineLabel = useMemo(() => {
-    const route = routeRef.current;
-    if (!route) return null;
-    const km = route.totalM / 1000;
-    return `${km.toFixed(2)} km @ ${speed.toFixed(1)}x`;
-  }, [speed, seekPct, sim]);
+    if (!streamInfo) return null;
+    if (streamInfo.maxIndex <= 0) {
+      return `1 sample/vehicle | ${streamInfo.cars} cars @ ${speed.toFixed(1)}x`;
+    }
+    return `${streamInfo.cars} cars | ${streamInfo.samples} samples | ${streamInfo.maxIndex + 1} steps @ ${speed.toFixed(1)}x`;
+  }, [streamInfo, speed]);
 
   if (authLoading || !user) {
     return (
@@ -671,9 +782,9 @@ export default function SimulationPage() {
           </Button>
         </Stack>
         <Typography variant="body2" color="text.secondary">
-          Pick a <b>point feature layer</b> as the control (each feature becomes a vehicle) and a <b>line feature layer</b>
-          &nbsp;as the route. Points are staggered evenly along the route and animated with
-          <code> requestAnimationFrame</code>.
+          Choose a <b>point layer</b> and a <b>field to group by</b> (for example a vehicle or trip id). The map shows
+          the <b>route polyline</b> only. Each group is one &quot;car&quot;; during playback, <b>one point per car</b> is
+          shown at a time, advancing in time order through that group&apos;s points (streaming simulation).
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
 
@@ -703,11 +814,40 @@ export default function SimulationPage() {
           </Typography>
         )}
 
+        <FormControl
+          size="small"
+          fullWidth
+          disabled={loadingLayers || isRunning || isPaused || !selectedPointLayerId || loadingPointFields}
+        >
+          <InputLabel id="sim-groupby-label">Group by (field)</InputLabel>
+          <Select
+            labelId="sim-groupby-label"
+            label="Group by (field)"
+            value={groupByField}
+            onChange={handleGroupByFieldChange}
+          >
+            <MenuItem value="">
+              <em>— Select column —</em>
+            </MenuItem>
+            {pointLayerFields.map((f) => (
+              <MenuItem key={f.name} value={f.name}>
+                {f.name}
+                {f.type != null && f.type !== "" ? ` (${String(f.type)})` : ""}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        {!!selectedPointLayerId && !loadingPointFields && pointLayerFields.length === 0 && (
+          <Typography variant="caption" color="text.secondary">
+            No field list returned — the layer may have empty attributes, or the schema is still being written.
+          </Typography>
+        )}
+
         <FormControl size="small" fullWidth disabled={loadingLayers || isRunning || isPaused}>
-          <InputLabel id="sim-route-layer-label">Route layer (lines)</InputLabel>
+          <InputLabel id="sim-route-layer-label">Route layer (lines) — optional</InputLabel>
           <Select
             labelId="sim-route-layer-label"
-            label="Route layer (lines)"
+            label="Route layer (lines) — optional"
             value={selectedRouteLayerId}
             onChange={handleRouteLayerChange}
           >
@@ -727,20 +867,30 @@ export default function SimulationPage() {
           </Typography>
         )}
 
-        {(selectedPointLayer || selectedLineLayer) && (
+        {(selectedPointLayer || selectedLineLayer || groupByField) && (
           <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
             {selectedPointLayer && (
               <Chip
                 size="small"
-                label={`${selectedPointLayer.name} — ${selectedPointLayer.feature_count} pts`}
+                label={`${selectedPointLayer.name} — ${selectedPointLayer.feature_count} features`}
                 color="primary"
+                variant="outlined"
+              />
+            )}
+            {groupByField && (
+              <Chip size="small" label={`group: ${groupByField}`} variant="outlined" />
+            )}
+            {streamInfo && (
+              <Chip
+                size="small"
+                label={`${streamInfo.cars} cars | ${streamInfo.samples} points`}
                 variant="outlined"
               />
             )}
             {selectedLineLayer && (
               <Chip
                 size="small"
-                label={`${selectedLineLayer.name} — ${selectedLineLayer.feature_count} lines`}
+                label={`route: ${selectedLineLayer.name}`}
                 color="secondary"
                 variant="outlined"
               />
@@ -757,7 +907,12 @@ export default function SimulationPage() {
             startIcon={<Play size={16} />}
             onClick={handleStart}
             disabled={
-              starting || isRunning || isPaused || selectedPointLayerId === "" || selectedRouteLayerId === ""
+              starting ||
+              isRunning ||
+              isPaused ||
+              selectedPointLayerId === "" ||
+              groupByField === "" ||
+              !streamInfo?.cars
             }
           >
             Start
@@ -839,7 +994,7 @@ export default function SimulationPage() {
             step={0.1}
             value={seekPct * 100}
             onChange={handleSeek}
-            disabled={!routeRef.current}
+            disabled={!streamInfo || streamInfo.maxIndex <= 0}
           />
         </Stack>
 
@@ -853,8 +1008,8 @@ export default function SimulationPage() {
             </Typography>
             {Object.values(live)
               .slice(0, 20)
-              .map((s, idx) => {
-                const palette = PALETTE[idx % PALETTE.length];
+              .map((s) => {
+                const [r, g, b] = s.colorRgb;
                 return (
                   <Stack
                     key={s.vehicleId}
@@ -862,12 +1017,19 @@ export default function SimulationPage() {
                     spacing={1}
                     sx={{ alignItems: "center", fontSize: 12 }}
                   >
-                    <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: palette.hex }} />
+                    <Box
+                      sx={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: "50%",
+                        bgcolor: `rgb(${r},${g},${b})`,
+                      }}
+                    />
                     <Typography variant="caption" sx={{ minWidth: 80 }} noWrap>
                       {s.label}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      {s.headingDeg.toFixed(0)}° · {s.status}
+                      #{s.pointIndex} · {s.headingDeg.toFixed(0)}° · {s.status}
                     </Typography>
                   </Stack>
                 );
