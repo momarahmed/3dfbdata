@@ -1,6 +1,11 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+// Static imports keep Graphic/Extent in this module’s chunk. Lazy-loading
+// `@arcgis/core/Graphic` as a separate split chunk is prone to “Loading chunk
+// … Graphic_js failed” in dev (HMR) and on slow networks.
+import Graphic from "@arcgis/core/Graphic";
+import Extent from "@arcgis/core/geometry/Extent";
 
 export type SimVehicleState = {
   vehicleId: string;
@@ -63,9 +68,9 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
 
     initPromiseRef.current = (async () => {
       const [{ default: Map }, { default: MapView }, { default: GraphicsLayer }] = await Promise.all([
-        import("@arcgis/core/Map"),
-        import("@arcgis/core/views/MapView"),
-        import("@arcgis/core/layers/GraphicsLayer"),
+        import("@arcgis/core/Map.js"),
+        import("@arcgis/core/views/MapView.js"),
+        import("@arcgis/core/layers/GraphicsLayer.js"),
       ]);
 
       const routesLayer = new GraphicsLayer({ id: "sim-routes", title: "Simulated routes" });
@@ -111,7 +116,6 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
         await initPromiseRef.current;
         const routes = routesLayerRef.current;
         if (!routes) return;
-        const { default: Graphic } = await import("@arcgis/core/Graphic");
         routes.removeAll();
         if (route.coords.length > 1) {
           routes.add(
@@ -136,8 +140,6 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
         await initPromiseRef.current;
         const vehiclesLayer = vehiclesLayerRef.current;
         if (!vehiclesLayer) return;
-        const { default: Graphic } = await import("@arcgis/core/Graphic");
-
         vehiclesLayer.removeAll();
         vehicleGraphicsRef.current.clear();
 
@@ -188,8 +190,6 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
         const routes = routesLayerRef.current;
         const vehicles = vehiclesLayerRef.current;
         if (!view || !routes || !vehicles) return;
-
-        const { default: Graphic } = await import("@arcgis/core/Graphic");
 
         routes.removeAll();
         vehicles.removeAll();
@@ -304,7 +304,6 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
         }
         for (const p of routeCoordsRef.current) consume(p);
         if (!isFinite(minLng)) return;
-        const { default: Extent } = await import("@arcgis/core/geometry/Extent");
         const extent = new Extent({
           xmin: minLng,
           ymin: minLat,
