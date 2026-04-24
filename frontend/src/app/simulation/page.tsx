@@ -653,7 +653,7 @@ export default function SimulationPage() {
           bgcolor: "background.paper",
         }}
       >
-        <Stack direction="row" justifyContent="space-between" alignItems="center">
+        <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
           <Typography variant="h6">Real-time simulation</Typography>
           <Button size="small" startIcon={<RefreshCw size={14} />} onClick={loadLayers} disabled={loadingLayers}>
             Reload
@@ -795,7 +795,7 @@ export default function SimulationPage() {
         </Stack>
 
         <Stack spacing={0.5}>
-          <Stack direction="row" alignItems="center" spacing={1}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
             <Gauge size={14} />
             <Typography variant="caption" color="text.secondary">
               Speed: {speed.toFixed(1)}x
@@ -849,8 +849,7 @@ export default function SimulationPage() {
                     key={s.vehicleId}
                     direction="row"
                     spacing={1}
-                    alignItems="center"
-                    sx={{ fontSize: 12 }}
+                    sx={{ alignItems: "center", fontSize: 12 }}
                   >
                     <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: palette.hex }} />
                     <Typography variant="caption" sx={{ minWidth: 80 }} noWrap>
