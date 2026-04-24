@@ -2,6 +2,7 @@
 
 import { Box, Typography } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
+import EsriExtent from "@arcgis/core/geometry/Extent";
 
 type LayerRef = {
   id: string;
@@ -136,15 +137,15 @@ export function FeatureLayerMapClient({ layers, height = 480 }: Props) {
         );
 
         try {
-          let combined: __esri.Extent | null = null;
-          mapLayers.forEach((lyr) => {
-            const ext = (lyr as unknown as { fullExtent?: __esri.Extent }).fullExtent ?? null;
-            if (ext) {
-              combined = combined ? combined.union(ext) : ext.clone();
-            }
-          });
-          if (combined && view) {
-            await view.goTo((combined as __esri.Extent).expand(1.2));
+          let combined: EsriExtent | null = null;
+          for (const lyr of mapLayers) {
+            const raw = lyr.fullExtent;
+            if (!raw) continue;
+            const ext = raw as EsriExtent;
+            combined = combined == null ? ext.clone() : combined.union(ext);
+          }
+          if (combined != null && view) {
+            await view.goTo(combined.expand(1.2));
           }
         } catch {
           /* ignore */

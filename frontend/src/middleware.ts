@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+/** Path for Chrome DevTools “Workspaces” (must match `config.matcher` below). */
 const DEVTOOLS_PATH = "/.well-known/appspecific/com.chrome.devtools.json";
 
 /**
@@ -35,5 +36,7 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: DEVTOOLS_PATH,
+  // Static string required: Next does not allow identifiers in `matcher` (static analysis),
+  // but it must be the same URL as `DEVTOOLS_PATH` above.
+  matcher: "/.well-known/appspecific/com.chrome.devtools.json",
 };

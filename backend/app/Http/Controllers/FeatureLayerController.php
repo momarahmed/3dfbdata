@@ -64,17 +64,29 @@ class FeatureLayerController extends Controller
 
     public function geojson(Request $request, FeatureLayer $featureLayer): JsonResponse
     {
-        $requestedLimit = (int) $request->query('limit', 10000);
-        $limit = max(1, min(10000, $requestedLimit));
+        $raw = $request->query('limit');
+        $useLimit = $raw !== null && $raw !== '' && (int) $raw > 0;
 
-        $rows = DB::select(
-            'SELECT id, properties, ST_AsGeoJSON(geom) AS gj
-             FROM feature_layer_features
-             WHERE feature_layer_id = ?
-             ORDER BY id
-             LIMIT ?',
-            [$featureLayer->id, $limit]
-        );
+        if ($useLimit) {
+            $limit = min((int) $raw, 5_000_000);
+            $rows = DB::select(
+                'SELECT id, properties, ST_AsGeoJSON(geom) AS gj
+                 FROM feature_layer_features
+                 WHERE feature_layer_id = ?
+                 ORDER BY id
+                 LIMIT ?',
+                [$featureLayer->id, $limit]
+            );
+        } else {
+            // No `limit` (or `limit=0`) returns every feature in the table.
+            $rows = DB::select(
+                'SELECT id, properties, ST_AsGeoJSON(geom) AS gj
+                 FROM feature_layer_features
+                 WHERE feature_layer_id = ?
+                 ORDER BY id',
+                [$featureLayer->id]
+            );
+        }
 
         $features = [];
         foreach ($rows as $r) {

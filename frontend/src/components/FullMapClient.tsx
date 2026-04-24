@@ -115,13 +115,17 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
         const [lng, lat] = f.geometry?.coordinates ?? [];
         if (typeof lng !== "number" || typeof lat !== "number") continue;
         const g = new mods.Graphic({
-          geometry: { type: "point", longitude: lng, latitude: lat } as __esri.GeometryProperties,
+          geometry: { type: "point", longitude: lng, latitude: lat } as import("@arcgis/core/geometry/Point").PointProperties & {
+            type: "point";
+          },
           symbol: {
             type: "simple-marker",
             color: [34, 197, 94, 0.9],
             size: 12,
             outline: { color: [15, 23, 42, 0.9], width: 1.5 },
-          } as __esri.SymbolProperties,
+          } as import("@arcgis/core/symbols/SimpleMarkerSymbol").SimpleMarkerSymbolProperties & {
+            type: "simple-marker";
+          },
           attributes: {
             id: f.id ?? f.properties?.id,
             name: f.properties?.name ?? "",
@@ -130,7 +134,7 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
           popupTemplate: {
             title: "Destination · {name}",
             content: "ID: {id}",
-          } as __esri.PopupTemplateProperties,
+          } as import("@arcgis/core/PopupTemplate").PopupTemplateProperties,
         });
         layer.add(g);
       }
@@ -152,13 +156,17 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
         if (typeof lng !== "number" || typeof lat !== "number") continue;
         const props = f.properties ?? {};
         const g = new mods.Graphic({
-          geometry: { type: "point", longitude: lng, latitude: lat } as __esri.GeometryProperties,
+          geometry: { type: "point", longitude: lng, latitude: lat } as import("@arcgis/core/geometry/Point").PointProperties & {
+            type: "point";
+          },
           symbol: {
             type: "simple-marker",
             color: [168, 85, 247, 0.95],
             size: 12,
             outline: { color: [15, 23, 42, 0.9], width: 1.5 },
-          } as __esri.SymbolProperties,
+          } as import("@arcgis/core/symbols/SimpleMarkerSymbol").SimpleMarkerSymbolProperties & {
+            type: "simple-marker";
+          },
           attributes: {
             id: f.id ?? props.id,
             dist_name: props.dist_name ?? "",
@@ -167,7 +175,7 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
           popupTemplate: {
             title: "Distanation · {dist_name}",
             content: "ID: {id}",
-          } as __esri.PopupTemplateProperties,
+          } as import("@arcgis/core/PopupTemplate").PopupTemplateProperties,
         });
         layer.add(g);
       }
@@ -291,6 +299,7 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
               const lat = g.latitude;
               const id = graphic.attributes.id as string;
               if (!id) continue;
+              if (typeof lng !== "number" || typeof lat !== "number") continue;
               try {
                 const token = getToken();
                 await fetch(`${apiBase}/api/destinations/${id}`, {
@@ -386,6 +395,7 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
               const lat = pt.latitude;
               const id = graphic.attributes.id as string;
               if (!id) continue;
+              if (typeof lng !== "number" || typeof lat !== "number") continue;
               try {
                 const token = getToken();
                 await fetch(`${apiBase}/api/distanations/${id}`, {
@@ -446,13 +456,19 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
             if (kind === "distanation") {
               const a = gr.attributes as { id: string; dist_name: string };
               const geom = gr.geometry as __esri.Point;
-              onEditDistanation({ id: a.id, dist_name: a.dist_name, lng: geom.longitude, lat: geom.latitude });
+              const lng = geom.longitude;
+              const lat = geom.latitude;
+              if (typeof lng !== "number" || typeof lat !== "number") return;
+              onEditDistanation({ id: a.id, dist_name: a.dist_name, lng, lat });
               return;
             }
             if (kind === "destination") {
               const a = gr.attributes as { id: string; name: string };
               const geom = gr.geometry as __esri.Point;
-              onEditDestination({ id: a.id, name: a.name, lng: geom.longitude, lat: geom.latitude });
+              const lng = geom.longitude;
+              const lat = geom.latitude;
+              if (typeof lng !== "number" || typeof lat !== "number") return;
+              onEditDestination({ id: a.id, name: a.name, lng, lat });
               return;
             }
           }
@@ -493,6 +509,7 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
     const mods = modulesRef.current;
     if (!view || !mods) return;
     const map = view.map;
+    if (!map) return;
     const wanted = new Set(selectedUserIds);
 
     for (const [id, layer] of userLayerMap.current) {
@@ -584,6 +601,7 @@ export const FullMapClient = forwardRef<FullMapHandle, Props>(function FullMapCl
     const mods = modulesRef.current;
     if (!view || !mods) return;
     const map = view.map;
+    if (!map) return;
     const wanted = new Set(selectedExternalIds);
 
     for (const [id, layer] of externalLayerMap.current) {

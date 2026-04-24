@@ -21,6 +21,8 @@ import {
   Stack,
   Switch,
   Typography,
+  FormGroup,
+  Checkbox,
 } from "@mui/material";
 import {
   Gauge,
@@ -31,8 +33,9 @@ import {
   Square,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getApiBase } from "@/lib/api";
 import type {
+  SimMapOverlayItem,
   SimulationMapHandle,
   SimVehicleSpec,
 } from "@/components/SimulationMapClient";
@@ -85,6 +88,17 @@ const PALETTE: PaletteEntry[] = [
   { color: [16, 185, 129], hex: "#10b981" },
   { color: [234, 179, 8], hex: "#eab308" },
   { color: [168, 85, 247], hex: "#a855f7" },
+];
+
+const MAP_OVERLAY_RGB: [number, number, number][] = [
+  [34, 211, 238],
+  [244, 114, 182],
+  [250, 204, 21],
+  [129, 140, 248],
+  [74, 222, 128],
+  [248, 113, 113],
+  [251, 146, 60],
+  [45, 212, 191],
 ];
 
 // `FeatureLayer.geometry_type` is stored uppercase (POINT, LINESTRING,
@@ -282,6 +296,8 @@ export default function SimulationPage() {
   const [loadingLayers, setLoadingLayers] = useState(true);
   const [starting, setStarting] = useState(false);
   const [live, setLive] = useState<Record<string, LiveState>>({});
+  /** When true, the layer is drawn on the map (PostGIS feature layers). */
+  const [mapLayerVisible, setMapLayerVisible] = useState<Record<string, boolean>>({});
 
   const playingRef = useRef(false);
   const pausedRef = useRef(false);
@@ -321,6 +337,37 @@ export default function SimulationPage() {
   useEffect(() => {
     if (user) void loadLayers();
   }, [user, loadLayers]);
+
+  useEffect(() => {
+    if (loadingLayers) return;
+    setMapLayerVisible((prev) => {
+      const next = { ...prev };
+      for (const l of layers) {
+        if (next[l.id] === undefined) next[l.id] = false;
+      }
+      for (const k of Object.keys(next)) {
+        if (!layers.some((l) => l.id === k)) delete next[k];
+      }
+      return next;
+    });
+  }, [loadingLayers, layers]);
+
+  const mapOverlayItems: SimMapOverlayItem[] = useMemo(() => {
+    const base = getApiBase();
+    return layers.map((l, idx) => ({
+      id: l.id,
+      name: l.name,
+      url: `${base}/api/feature-layers/${l.id}/geojson`,
+      visible: mapLayerVisible[l.id] ?? false,
+      geometry_type: l.geometry_type,
+      color: MAP_OVERLAY_RGB[idx % MAP_OVERLAY_RGB.length]!,
+    }));
+  }, [layers, mapLayerVisible]);
+
+  useEffect(() => {
+    if (loadingLayers) return;
+    void mapRef.current?.syncMapOverlays(mapOverlayItems);
+  }, [loadingLayers, mapOverlayItems]);
 
   useEffect(() => {
     if (!selectedPointLayerId) {
@@ -397,7 +444,7 @@ export default function SimulationPage() {
       }
       try {
         const fc = await apiFetch<FeatureCollection>(
-          `/api/feature-layers/${selectedRouteLayerId}/geojson?limit=10000`
+          `/api/feature-layers/${selectedRouteLayerId}/geojson`
         );
         if (cancelled) return;
         const lineFeature = fc.features.find((f) => matchesGeomSet(LINE_GEOMS, f.geometry?.type));
@@ -438,7 +485,7 @@ export default function SimulationPage() {
       }
       try {
         const fc = await apiFetch<FeatureCollection>(
-          `/api/feature-layers/${selectedPointLayerId}/geojson?limit=10000`
+          `/api/feature-layers/${selectedPointLayerId}/geojson`
         );
         if (cancelled) return;
         const pl = buildGroupedPointStreams(fc.features, groupByField);
@@ -740,6 +787,10 @@ export default function SimulationPage() {
     setGroupByField(e.target.value);
   };
 
+  const handleMapLayerToggle = (id: string) => (_: unknown, checked: boolean) => {
+    setMapLayerVisible((m) => ({ ...m, [id]: checked }));
+  };
+
   useEffect(() => () => stopAnimation(), []);
 
   const timelineLabel = useMemo(() => {
@@ -798,6 +849,61 @@ export default function SimulationPage() {
           shown at a time, advancing in time order through that group&apos;s points (streaming simulation).
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
+
+        <Divider />
+
+        <Stack spacing={0.75}>
+          <Typography variant="subtitle2">Layers on map (PostGIS)</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Every layer in the database is listed. Check a layer to draw it on the map; uncheck to hide. Large layers may take a
+            moment to load (full table, no 10,000 cap).
+          </Typography>
+          {loadingLayers && <LinearProgress />}
+          {layers.length === 0 && !loadingLayers && (
+            <Typography variant="caption" color="text.secondary">
+              No feature layers yet — upload from <b>Upload shapefiles</b>.
+            </Typography>
+          )}
+          {layers.length > 0 && (
+            <FormGroup sx={{ maxHeight: 220, overflow: "auto", pl: 0.5 }}>
+              {layers.map((l, idx) => {
+                const c = MAP_OVERLAY_RGB[idx % MAP_OVERLAY_RGB.length]!;
+                return (
+                  <FormControlLabel
+                    key={l.id}
+                    sx={{ alignItems: "flex-start", mr: 0, mb: 0.25 }}
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={mapLayerVisible[l.id] ?? false}
+                        onChange={handleMapLayerToggle(l.id)}
+                        disabled={loadingLayers}
+                      />
+                    }
+                    label={
+                      <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", flexWrap: "wrap" }}>
+                        <Box
+                          sx={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: 0.5,
+                            flexShrink: 0,
+                            bgcolor: `rgb(${c[0]},${c[1]},${c[2]})`,
+                            border: "1px solid rgba(0,0,0,0.2)",
+                          }}
+                        />
+                        <span>{l.name}</span>
+                        <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                          {l.feature_count} feat · {l.geometry_type || "—"}
+                        </Typography>
+                      </Stack>
+                    }
+                  />
+                );
+              })}
+            </FormGroup>
+          )}
+        </Stack>
 
         <Divider />
 
