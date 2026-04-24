@@ -7,6 +7,8 @@ use App\Http\Controllers\DistanationController;
 use App\Http\Controllers\FeatureLayerController;
 use App\Http\Controllers\HealthController;
 use App\Http\Controllers\RoutingTaskController;
+use App\Http\Controllers\SimulationController;
+use App\Http\Controllers\VehicleController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', [HealthController::class, 'index']);
@@ -45,4 +47,19 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/routing-tasks', [RoutingTaskController::class, 'store']);
     Route::get('/routing-tasks/{routingTask}', [RoutingTaskController::class, 'show'])->whereUuid('routingTask');
     Route::delete('/routing-tasks/{routingTask}', [RoutingTaskController::class, 'destroy'])->whereUuid('routingTask');
+
+    // Real-time vehicle streaming (PRD §14.2 and §14.5).
+    Route::get('/vehicles', [VehicleController::class, 'index']);
+    Route::get('/vehicles/{vehicleId}/points', [VehicleController::class, 'points']);
+
+    Route::get('/simulations', [SimulationController::class, 'index']);
+    Route::post('/simulations', [SimulationController::class, 'store']);
+    Route::get('/simulations/{id}', [SimulationController::class, 'show'])->whereUuid('id');
+    Route::patch('/simulations/{id}', [SimulationController::class, 'update'])->whereUuid('id');
+    Route::delete('/simulations/{id}', [SimulationController::class, 'destroy'])->whereUuid('id');
+    Route::post('/simulations/{id}/pause', [SimulationController::class, 'pause'])->whereUuid('id');
+    Route::post('/simulations/{id}/resume', [SimulationController::class, 'resume'])->whereUuid('id');
+    Route::post('/simulations/{id}/stop', [SimulationController::class, 'stop'])->whereUuid('id');
+    Route::post('/simulations/{id}/reset', [SimulationController::class, 'reset'])->whereUuid('id');
+    Route::post('/simulations/{id}/seek', [SimulationController::class, 'seek'])->whereUuid('id');
 });

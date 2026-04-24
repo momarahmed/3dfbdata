@@ -55,5 +55,7 @@ class DatabaseSeeder extends Seeder
             ['title' => 'Flow slowdown detected', 'zone' => 'East Concourse'],
             ['severity' => 'Medium', 'status' => 'ack', 'triggered_at' => now()->subMinutes(22)]
         );
+
+        $this->call(VehiclePointsSeeder::class);
     }
 }

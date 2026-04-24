@@ -13,7 +13,7 @@ import {
   Toolbar,
   Typography,
 } from "@mui/material";
-import { LayoutDashboard, LogOut, Map as MapIcon, UploadCloud } from "lucide-react";
+import { LayoutDashboard, LogOut, Map as MapIcon, PlayCircle, UploadCloud } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const drawerWidth = 240;
@@ -21,6 +21,7 @@ const drawerWidth = 240;
 const nav = [
   { href: "/dashboard", label: "Operations dashboard", icon: LayoutDashboard },
   { href: "/map", label: "Map", icon: MapIcon },
+  { href: "/simulation", label: "Simulation", icon: PlayCircle },
   { href: "/ops/shapefiles", label: "Upload shapefiles", icon: UploadCloud },
 ];
 

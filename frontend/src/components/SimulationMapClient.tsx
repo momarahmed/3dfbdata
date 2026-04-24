@@ -1,0 +1,225 @@
+"use client";
+
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+
+export type SimVehicleState = {
+  vehicleId: string;
+  lng: number;
+  lat: number;
+  headingDeg: number;
+  speedKmh: number;
+  visible: boolean;
+};
+
+export type SimVehicleTrack = {
+  vehicleId: string;
+  color: [number, number, number];
+  points: Array<{ lng: number; lat: number }>;
+};
+
+export type SimulationMapHandle = {
+  setTracks: (tracks: SimVehicleTrack[]) => Promise<void>;
+  updateVehicle: (state: SimVehicleState) => void;
+  clearVehicles: () => void;
+  recenterOnTracks: () => Promise<void>;
+};
+
+type Props = { className?: string };
+
+export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(function SimulationMapClient(
+  _props,
+  ref
+) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<any>(null);
+  const routesLayerRef = useRef<any>(null);
+  const vehiclesLayerRef = useRef<any>(null);
+  const tracksRef = useRef<SimVehicleTrack[]>([]);
+  const vehicleGraphicsRef = useRef<Map<string, any>>(new Map());
+  const initPromiseRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    initPromiseRef.current = (async () => {
+      const [{ default: Map }, { default: MapView }, { default: GraphicsLayer }] = await Promise.all([
+        import("@arcgis/core/Map"),
+        import("@arcgis/core/views/MapView"),
+        import("@arcgis/core/layers/GraphicsLayer"),
+      ]);
+
+      const routesLayer = new GraphicsLayer({ id: "sim-routes", title: "Simulated routes" });
+      const vehiclesLayer = new GraphicsLayer({ id: "sim-vehicles", title: "Vehicles" });
+
+      const map = new Map({
+        basemap: "streets-navigation-vector",
+        layers: [routesLayer, vehiclesLayer],
+      });
+
+      const view = new MapView({
+        container: containerRef.current!,
+        map,
+        center: [46.6753, 24.7136],
+        zoom: 13,
+      });
+
+      await view.when();
+
+      viewRef.current = view;
+      routesLayerRef.current = routesLayer;
+      vehiclesLayerRef.current = vehiclesLayer;
+    })();
+
+    return () => {
+      const v = viewRef.current;
+      if (v) {
+        try { v.destroy(); } catch { /* noop */ }
+      }
+      viewRef.current = null;
+      routesLayerRef.current = null;
+      vehiclesLayerRef.current = null;
+      vehicleGraphicsRef.current.clear();
+      tracksRef.current = [];
+    };
+  }, []);
+
+  useImperativeHandle(
+    ref,
+    (): SimulationMapHandle => ({
+      async setTracks(tracks) {
+        await initPromiseRef.current;
+        const view = viewRef.current;
+        const routes = routesLayerRef.current;
+        const vehicles = vehiclesLayerRef.current;
+        if (!view || !routes || !vehicles) return;
+
+        const { default: Graphic } = await import("@arcgis/core/Graphic");
+
+        routes.removeAll();
+        vehicles.removeAll();
+        vehicleGraphicsRef.current.clear();
+
+        for (const track of tracks) {
+          if (track.points.length > 1) {
+            routes.add(
+              new Graphic({
+                geometry: {
+                  type: "polyline",
+                  paths: [track.points.map((p) => [p.lng, p.lat])],
+                  spatialReference: { wkid: 4326 },
+                } as any,
+                symbol: {
+                  type: "simple-line",
+                  color: [...track.color, 0.9],
+                  width: 3,
+                } as any,
+                attributes: { vehicle_id: track.vehicleId, kind: "route" },
+              })
+            );
+          }
+
+          const marker = new Graphic({
+            geometry: {
+              type: "point",
+              longitude: track.points[0]?.lng ?? 0,
+              latitude: track.points[0]?.lat ?? 0,
+              spatialReference: { wkid: 4326 },
+            } as any,
+            symbol: {
+              type: "simple-marker",
+              style: "triangle",
+              color: [...track.color, 1],
+              size: 14,
+              outline: { color: [15, 23, 42, 1], width: 1.5 },
+              angle: 0,
+            } as any,
+            attributes: {
+              vehicle_id: track.vehicleId,
+              kind: "vehicle",
+              speed_kmh: 0,
+              heading_deg: 0,
+              timestamp: null,
+            },
+            popupTemplate: {
+              title: `Vehicle ${track.vehicleId}`,
+              content: [
+                {
+                  type: "fields",
+                  fieldInfos: [
+                    { fieldName: "speed_kmh", label: "Speed (km/h)" },
+                    { fieldName: "heading_deg", label: "Heading (°)" },
+                    { fieldName: "timestamp", label: "Timestamp" },
+                  ],
+                },
+              ],
+            } as any,
+          });
+          vehicles.add(marker);
+          vehicleGraphicsRef.current.set(track.vehicleId, marker);
+        }
+
+        tracksRef.current = tracks;
+      },
+      updateVehicle(state) {
+        const marker = vehicleGraphicsRef.current.get(state.vehicleId);
+        if (!marker) return;
+        marker.visible = state.visible;
+        if (!state.visible) return;
+        marker.geometry = {
+          type: "point",
+          longitude: state.lng,
+          latitude: state.lat,
+          spatialReference: { wkid: 4326 },
+        } as any;
+        const symbol = marker.symbol?.clone?.();
+        if (symbol) {
+          symbol.angle = state.headingDeg;
+          marker.symbol = symbol;
+        }
+        marker.attributes = {
+          ...marker.attributes,
+          speed_kmh: Math.round(state.speedKmh * 10) / 10,
+          heading_deg: Math.round(state.headingDeg * 10) / 10,
+        };
+      },
+      clearVehicles() {
+        const routes = routesLayerRef.current;
+        const vehicles = vehiclesLayerRef.current;
+        routes?.removeAll();
+        vehicles?.removeAll();
+        vehicleGraphicsRef.current.clear();
+        tracksRef.current = [];
+      },
+      async recenterOnTracks() {
+        await initPromiseRef.current;
+        const view = viewRef.current;
+        if (!view || tracksRef.current.length === 0) return;
+
+        let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+        for (const t of tracksRef.current) {
+          for (const p of t.points) {
+            if (p.lng < minLng) minLng = p.lng;
+            if (p.lat < minLat) minLat = p.lat;
+            if (p.lng > maxLng) maxLng = p.lng;
+            if (p.lat > maxLat) maxLat = p.lat;
+          }
+        }
+        if (!isFinite(minLng)) return;
+        const { default: Extent } = await import("@arcgis/core/geometry/Extent");
+        const extent = new Extent({
+          xmin: minLng,
+          ymin: minLat,
+          xmax: maxLng,
+          ymax: maxLat,
+          spatialReference: { wkid: 4326 } as any,
+        });
+        try {
+          await view.goTo(extent.expand(1.4));
+        } catch { /* ignore cancel */ }
+      },
+    }),
+    []
+  );
+
+  return <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />;
+});

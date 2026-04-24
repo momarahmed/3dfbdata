@@ -58,6 +58,11 @@ curl -s http://127.0.0.1:8000/api/feature-layers -H "Authorization: Bearer TOKEN
 
 - **PostgreSQL vs MySQL:** `PRD/dev-env.txt` mentions MySQL; this repository uses **PostgreSQL 18 + PostGIS** to match `Routing_Points_PRD_v2_1_esri.md` (geometry + routing source of truth). MySQL was not added to avoid duplicating OLTP databases.
 - **Routing Task pipeline:** the legacy FeatureServer shim and `routing_jobs` pipeline have been retired. Routing is now run from the Map page via `POST /api/routing-tasks`; results are written as `FeatureLayer` rows in PostGIS and streamed as GeoJSON to ArcGIS Maps SDK.
+- **Real-time simulation:** see `PRD/realtime_geospatial_vehicle_streaming_prd_v2.md`. The sidebar *Simulation* tab (between **Map** and **Upload shapefiles**) lets operators pick vehicles, press Start, and replay historical trajectories with Start · Pause · Resume · Stop · Reset · Seek · Speed (0.1x–10x) controls.
+  - Data model: `car_points_history (vehicle_id, route_id, point_time, speed_kmh, heading_deg, longitude, latitude, geom(Point,4326))` and `simulations (simulation_id, status, vehicle_ids, speed_multiplier, …)`.
+  - REST endpoints: `GET /api/vehicles`, `GET /api/vehicles/{id}/points`, `POST /api/simulations`, `PATCH /api/simulations/{id}`, `POST /api/simulations/{id}/{pause|resume|stop|reset|seek}`.
+  - Client-side replay interpolates between received points with `requestAnimationFrame`, rotating the marker by `heading_deg`.
+  - Future work per PRD §11: decouple the simulator and gateway through a **Redis Streams** / **NATS JetStream** message bus with a sequenced WebSocket v1 protocol (resume-on-reconnect, backpressure, heartbeat) and an async shapefile ingest worker with `ogr2ogr` reprojection.
 - **3D + TimeSlider:** PRD §12 / Appendix D — scaffolded in docs; MapView is shipped in UI. Enable `NEXT_PUBLIC_ARCGIS_API_KEY` for full Esri basemaps.
 
 ## Repo layout
