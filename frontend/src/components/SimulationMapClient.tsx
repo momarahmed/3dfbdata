@@ -17,10 +17,29 @@ export type SimVehicleTrack = {
   points: Array<{ lng: number; lat: number }>;
 };
 
+export type SimRouteSpec = {
+  routeId: string;
+  color: [number, number, number];
+  coords: Array<{ lng: number; lat: number }>;
+};
+
+export type SimVehicleSpec = {
+  vehicleId: string;
+  color: [number, number, number];
+  start: { lng: number; lat: number };
+  label?: string;
+};
+
 export type SimulationMapHandle = {
+  /** Legacy per-vehicle track API (one polyline per track). */
   setTracks: (tracks: SimVehicleTrack[]) => Promise<void>;
+  /** Draw the shared route polyline once. Replaces any previous route. */
+  setRoute: (route: SimRouteSpec) => Promise<void>;
+  /** Create markers for each vehicle at its starting coordinate. */
+  setVehicles: (vehicles: SimVehicleSpec[]) => Promise<void>;
   updateVehicle: (state: SimVehicleState) => void;
   clearVehicles: () => void;
+  /** Recenter to either the current tracks or the current route. */
   recenterOnTracks: () => Promise<void>;
 };
 
@@ -35,6 +54,7 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
   const routesLayerRef = useRef<any>(null);
   const vehiclesLayerRef = useRef<any>(null);
   const tracksRef = useRef<SimVehicleTrack[]>([]);
+  const routeCoordsRef = useRef<Array<{ lng: number; lat: number }>>([]);
   const vehicleGraphicsRef = useRef<Map<string, any>>(new Map());
   const initPromiseRef = useRef<Promise<void> | null>(null);
 
@@ -80,12 +100,88 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
       vehiclesLayerRef.current = null;
       vehicleGraphicsRef.current.clear();
       tracksRef.current = [];
+      routeCoordsRef.current = [];
     };
   }, []);
 
   useImperativeHandle(
     ref,
     (): SimulationMapHandle => ({
+      async setRoute(route) {
+        await initPromiseRef.current;
+        const routes = routesLayerRef.current;
+        if (!routes) return;
+        const { default: Graphic } = await import("@arcgis/core/Graphic");
+        routes.removeAll();
+        if (route.coords.length > 1) {
+          routes.add(
+            new Graphic({
+              geometry: {
+                type: "polyline",
+                paths: [route.coords.map((p) => [p.lng, p.lat])],
+                spatialReference: { wkid: 4326 },
+              } as any,
+              symbol: {
+                type: "simple-line",
+                color: [...route.color, 0.95],
+                width: 4,
+              } as any,
+              attributes: { route_id: route.routeId, kind: "route" },
+            })
+          );
+        }
+        routeCoordsRef.current = route.coords;
+      },
+      async setVehicles(vehicles) {
+        await initPromiseRef.current;
+        const vehiclesLayer = vehiclesLayerRef.current;
+        if (!vehiclesLayer) return;
+        const { default: Graphic } = await import("@arcgis/core/Graphic");
+
+        vehiclesLayer.removeAll();
+        vehicleGraphicsRef.current.clear();
+
+        for (const v of vehicles) {
+          const marker = new Graphic({
+            geometry: {
+              type: "point",
+              longitude: v.start.lng,
+              latitude: v.start.lat,
+              spatialReference: { wkid: 4326 },
+            } as any,
+            symbol: {
+              type: "simple-marker",
+              style: "triangle",
+              color: [...v.color, 1],
+              size: 14,
+              outline: { color: [15, 23, 42, 1], width: 1.5 },
+              angle: 0,
+            } as any,
+            attributes: {
+              vehicle_id: v.vehicleId,
+              label: v.label ?? v.vehicleId,
+              kind: "vehicle",
+              speed_kmh: 0,
+              heading_deg: 0,
+            },
+            popupTemplate: {
+              title: v.label ?? `Vehicle ${v.vehicleId}`,
+              content: [
+                {
+                  type: "fields",
+                  fieldInfos: [
+                    { fieldName: "speed_kmh", label: "Speed (km/h)" },
+                    { fieldName: "heading_deg", label: "Heading (°)" },
+                    { fieldName: "vehicle_id", label: "ID" },
+                  ],
+                },
+              ],
+            } as any,
+          });
+          vehiclesLayer.add(marker);
+          vehicleGraphicsRef.current.set(v.vehicleId, marker);
+        }
+      },
       async setTracks(tracks) {
         await initPromiseRef.current;
         const view = viewRef.current;
@@ -189,21 +285,24 @@ export const SimulationMapClient = forwardRef<SimulationMapHandle, Props>(functi
         vehicles?.removeAll();
         vehicleGraphicsRef.current.clear();
         tracksRef.current = [];
+        routeCoordsRef.current = [];
       },
       async recenterOnTracks() {
         await initPromiseRef.current;
         const view = viewRef.current;
-        if (!view || tracksRef.current.length === 0) return;
+        if (!view) return;
 
         let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+        const consume = (p: { lng: number; lat: number }) => {
+          if (p.lng < minLng) minLng = p.lng;
+          if (p.lat < minLat) minLat = p.lat;
+          if (p.lng > maxLng) maxLng = p.lng;
+          if (p.lat > maxLat) maxLat = p.lat;
+        };
         for (const t of tracksRef.current) {
-          for (const p of t.points) {
-            if (p.lng < minLng) minLng = p.lng;
-            if (p.lat < minLat) minLat = p.lat;
-            if (p.lng > maxLng) maxLng = p.lng;
-            if (p.lat > maxLat) maxLat = p.lat;
-          }
+          for (const p of t.points) consume(p);
         }
+        for (const p of routeCoordsRef.current) consume(p);
         if (!isFinite(minLng)) return;
         const { default: Extent } = await import("@arcgis/core/geometry/Extent");
         const extent = new Extent({
