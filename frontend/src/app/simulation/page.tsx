@@ -728,7 +728,7 @@ export default function SimulationPage() {
         )}
 
         {(selectedPointLayer || selectedLineLayer) && (
-          <Stack direction="row" spacing={1} flexWrap="wrap">
+          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
             {selectedPointLayer && (
               <Chip
                 size="small"
